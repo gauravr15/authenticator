@@ -1,58 +1,44 @@
 package com.odin.authenticator.utility;
 
-import javax.crypto.*;
-import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.PBEKeySpec;
-import javax.crypto.spec.SecretKeySpec;
-
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
 
-import java.security.*;
-import java.security.spec.InvalidKeySpecException;
-import java.security.spec.KeySpec;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Base64;
 
+@Service
 public class EncryptionDecryption {
-	
-	@Value("${encryption-key}")
-    private String encryptionKey;
-	
-    private static final String ALGORITHM = "AES";
-    private static final String CIPHER_TRANSFORMATION = "AES/CBC/PKCS5Padding";
-    private static final int KEY_SIZE = 256;
-    private static final int ITERATIONS = 65536;
-    private static final int SALT_SIZE = 16;
 
-    private SecretKey secretKey;
-    private IvParameterSpec ivParameterSpec;
+    @Value("${encryption.key}")
+    private String staticKey;
 
-    public EncryptionDecryption(String iv) throws NoSuchAlgorithmException, InvalidKeySpecException {
-        byte[] salt = generateSalt();
-        KeySpec keySpec = new PBEKeySpec(encryptionKey.toCharArray(), salt, ITERATIONS, KEY_SIZE);
-        SecretKeyFactory secretKeyFactory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-        byte[] keyBytes = secretKeyFactory.generateSecret(keySpec).getEncoded();
-        secretKey = new SecretKeySpec(keyBytes, ALGORITHM);
-        ivParameterSpec = new IvParameterSpec(Base64.getDecoder().decode(iv));
-    }
-
-    public String encrypt(String plaintext) throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, InvalidKeyException, BadPaddingException, IllegalBlockSizeException {
-        Cipher cipher = Cipher.getInstance(CIPHER_TRANSFORMATION);
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey, ivParameterSpec);
-        byte[] encryptedBytes = cipher.doFinal(plaintext.getBytes());
+    // Encryption method
+    public String encrypt(String data, String dynamicKey) throws Exception {
+        SecretKeySpec secretKey = generateKey(staticKey + dynamicKey);  // Combine static and dynamic keys
+        Cipher cipher = Cipher.getInstance("AES");
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey);
+        byte[] encryptedBytes = cipher.doFinal(data.getBytes(StandardCharsets.UTF_8));
         return Base64.getEncoder().encodeToString(encryptedBytes);
     }
 
-    public String decrypt(String ciphertext) throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, InvalidKeyException, BadPaddingException, IllegalBlockSizeException {
-        Cipher cipher = Cipher.getInstance(CIPHER_TRANSFORMATION);
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, ivParameterSpec);
-        byte[] decryptedBytes = cipher.doFinal(Base64.getDecoder().decode(ciphertext));
-        return new String(decryptedBytes);
+    // Decryption method
+    public String decrypt(String encryptedData, String dynamicKey) throws Exception {
+        SecretKeySpec secretKey = generateKey(staticKey + dynamicKey);  // Combine static and dynamic keys
+        Cipher cipher = Cipher.getInstance("AES");
+        cipher.init(Cipher.DECRYPT_MODE, secretKey);
+        byte[] decodedBytes = Base64.getDecoder().decode(encryptedData);
+        byte[] decryptedBytes = cipher.doFinal(decodedBytes);
+        return new String(decryptedBytes, StandardCharsets.UTF_8);
     }
 
-    private byte[] generateSalt() throws NoSuchAlgorithmException {
-        SecureRandom secureRandom = new SecureRandom();
-        byte[] salt = new byte[SALT_SIZE];
-        secureRandom.nextBytes(salt);
-        return salt;
+    // Generate a secret key by hashing the combined static and dynamic keys
+    private SecretKeySpec generateKey(String combinedKey) throws Exception {
+        MessageDigest sha = MessageDigest.getInstance("SHA-256");
+        byte[] key = combinedKey.getBytes(StandardCharsets.UTF_8);
+        key = sha.digest(key);  // Hash the combined key with SHA-256 to ensure 256-bit length
+        return new SecretKeySpec(key, "AES");
     }
 }
