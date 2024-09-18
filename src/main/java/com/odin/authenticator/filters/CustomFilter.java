@@ -1,30 +1,49 @@
 package com.odin.authenticator.filters;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.odin.authenticator.utility.CustomHttpRequestWrapper;
-import com.odin.authenticator.utility.EncryptionDecryption;
-import org.springframework.stereotype.Component;
-
-import javax.servlet.*;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
+
+import javax.servlet.Filter;
+import javax.servlet.FilterChain;
+import javax.servlet.FilterConfig;
+import javax.servlet.ServletException;
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.odin.authenticator.constants.ApplicationConstants;
+import com.odin.authenticator.service.ApiGatewayService;
+import com.odin.authenticator.utility.CustomHttpRequestWrapper;
+import com.odin.authenticator.utility.EncryptionDecryption;
 
 @Component
 public class CustomFilter implements Filter {
 
     private final EncryptionDecryption encryptionService;
     private final ObjectMapper objectMapper;
+    private final ApiGatewayService apiGatewayService;  // Use the new ApiGatewayService
 
-    public CustomFilter(EncryptionDecryption encryptionService, ObjectMapper objectMapper) {
+    @Value("${is.encryption.enabled:true}")
+    private boolean isEncryptionEnabled;
+
+    @Value("${bypass.apis}")
+    private List<String> bypassApis;
+
+    public CustomFilter(EncryptionDecryption encryptionService, ObjectMapper objectMapper, ApiGatewayService apiGatewayService) {
         this.encryptionService = encryptionService;
         this.objectMapper = objectMapper;
+        this.apiGatewayService = apiGatewayService;
     }
+
+    @Override
+    public void init(FilterConfig filterConfig) throws ServletException {}
 
     @Override
     public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {
@@ -32,6 +51,23 @@ public class CustomFilter implements Filter {
         HttpServletResponse httpResponse = (HttpServletResponse) response;
 
         String requestTimestamp = httpRequest.getHeader("requestTimestamp");
+        String requestURI = httpRequest.getRequestURI();
+        String requestBody = null;
+
+        // If encryption is disabled or the API is bypassed, proceed with URL transformation and REST call
+        if (!isEncryptionEnabled || bypassApis.contains(requestURI.replace(ApplicationConstants.CONTEXT_PATH, ""))) {
+            try {
+                requestBody = httpRequest.getMethod().equalsIgnoreCase("GET") ? null : readRequestBody(httpRequest);
+                String backendResponse = apiGatewayService.processAndForwardRequest(httpRequest, requestBody);
+                httpResponse.getWriter().write(backendResponse);
+            } catch (Exception e) {
+                httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+                httpResponse.getWriter().write("Error processing request: " + e.getMessage());
+            }
+            return;
+        }
+
+        // Handle decryption
         if (requestTimestamp == null) {
             httpResponse.setStatus(HttpServletResponse.SC_BAD_REQUEST);
             httpResponse.getWriter().write("Missing requestTimestamp header");
@@ -43,56 +79,46 @@ public class CustomFilter implements Filter {
             return;
         }
 
-        // Wrap the request only if not wrapped already
         CustomHttpRequestWrapper wrappedRequest;
         if (!(httpRequest instanceof CustomHttpRequestWrapper)) {
-            // Read the original request body in Java 8 using BufferedReader
-            String requestBody = readRequestBody(httpRequest);
-            System.out.println("Request Body: " + requestBody);  // Log request body
-
-            Map<String, Object> requestMap = objectMapper.readValue(requestBody, Map.class);
-            System.out.println("Request Map: " + requestMap);  // Log parsed map
-
+            String body = readRequestBody(httpRequest);
+            Map<String, Object> requestMap = objectMapper.readValue(body, Map.class);
             String encryptedRequest = (String) requestMap.get("request");
+
             if (encryptedRequest == null) {
                 httpResponse.setStatus(HttpServletResponse.SC_BAD_REQUEST);
                 httpResponse.getWriter().write("Missing 'request' field in JSON");
                 return;
             }
 
-            // Decrypt the request data
-            String decryptedJson = null;
-			try {
-				decryptedJson = encryptionService.decrypt(encryptedRequest, requestTimestamp);
-			} catch (Exception e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
-            System.out.println("Decrypted JSON: " + decryptedJson);  // Log decrypted JSON
+            String decryptedJson;
+            try {
+                decryptedJson = encryptionService.decrypt(encryptedRequest, requestTimestamp);
+            } catch (Exception e) {
+                httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+                httpResponse.getWriter().write("Error decrypting data");
+                return;
+            }
 
-            Map<String, Object> decryptedMap = objectMapper.readValue(decryptedJson, Map.class);
-            System.out.println("Decrypted Map: " + decryptedMap);  // Log decrypted map
-
-            // Wrap decrypted request body
             wrappedRequest = new CustomHttpRequestWrapper(httpRequest, decryptedJson);
-
-            // Log the decrypted request body
-            System.out.println("Request Body in Filter Before Forwarding: " + decryptedJson);
         } else {
             wrappedRequest = (CustomHttpRequestWrapper) httpRequest;
         }
 
-        // Forward the wrapped request in the filter chain
-        chain.doFilter(wrappedRequest, response);
+        // After decryption, always call the service to forward the request
+        try {
+            requestBody = wrappedRequest.getMethod().equalsIgnoreCase("GET") ? null : readRequestBody(wrappedRequest);
+            String backendResponse = apiGatewayService.processAndForwardRequest(wrappedRequest, requestBody);
+            httpResponse.getWriter().write(backendResponse);
+        } catch (Exception e) {
+            httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            httpResponse.getWriter().write("Error processing request: " + e.getMessage());
+        }
     }
-
-    @Override
-    public void init(FilterConfig filterConfig) throws ServletException {}
 
     @Override
     public void destroy() {}
 
-    // Helper method to read the request body in Java 8
     private String readRequestBody(HttpServletRequest request) throws IOException {
         StringBuilder requestBody = new StringBuilder();
         try (BufferedReader reader = request.getReader()) {
