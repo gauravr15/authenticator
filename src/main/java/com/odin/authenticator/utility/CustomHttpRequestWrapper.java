@@ -14,10 +14,9 @@ public class CustomHttpRequestWrapper extends HttpServletRequestWrapper {
 
     private final byte[] requestBodyBytes;
 
-    // Constructor to accept HttpServletRequest and decrypted request body
+   
     public CustomHttpRequestWrapper(HttpServletRequest request, String decryptedRequestBody) throws IOException {
         super(request);
-        // Cache the decrypted request body
         this.requestBodyBytes = decryptedRequestBody.getBytes(StandardCharsets.UTF_8);
     }
 
@@ -42,7 +41,7 @@ public class CustomHttpRequestWrapper extends HttpServletRequestWrapper {
 
             @Override
             public void setReadListener(ReadListener readListener) {
-                // Not required for this example
+               
             }
         };
     }

@@ -1,22 +1,37 @@
 package com.odin.authenticator.service;
 
+
 import java.net.URI;
 import java.util.Enumeration;
 
 import javax.servlet.http.HttpServletRequest;
 
+import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.odin.authenticator.constants.ApplicationConstants;
+import com.odin.authenticator.constants.ResponseCodes;
+import com.odin.authenticator.dto.ResponseDTO;
 import com.odin.authenticator.utility.BackendUrlSevice;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 @Service
 public class ApiGatewayService {
+	
+	@Autowired
+	private ObjectMapper objectMapper;
 
     private final BackendUrlSevice backendUrlService;
     private final WebClient webClient;
+
+    private static final String CORRELATION_ID_HEADER_NAME = "X-Correlation-ID";
 
     public ApiGatewayService(BackendUrlSevice backendUrlService, WebClient.Builder webClientBuilder) {
         this.backendUrlService = backendUrlService;
@@ -32,7 +47,7 @@ public class ApiGatewayService {
      */
     public String processAndForwardRequest(HttpServletRequest request, String requestBody) throws Exception {
         String originalUrl = request.getRequestURL().toString();
-        String urlPrefix = ApplicationConstants.CONTEXT_PATH+ApplicationConstants.TRAFFIC;
+        String urlPrefix = ApplicationConstants.CONTEXT_PATH + ApplicationConstants.TRAFFIC;
 
         // Check if the URL contains the prefix and process the URL modification
         if (originalUrl.contains(urlPrefix)) {
@@ -47,10 +62,11 @@ public class ApiGatewayService {
                 // Get the corresponding base URL from BackendUrlService
                 if (prefix != null) {
                     String baseUrl = backendUrlService.getDataByKey(prefix);
+                    
                     if (baseUrl != null) {
                         // Construct the new URL
                         URI newUri = UriComponentsBuilder.fromHttpUrl(baseUrl)
-                                .path(dynamicPart)
+                                .path(dynamicPart.replace("/" + prefix + "/", "/"))
                                 .build().toUri();
 
                         // Now make a call to the new URL using WebClient
@@ -77,42 +93,74 @@ public class ApiGatewayService {
         String method = request.getMethod();
         WebClient.ResponseSpec responseSpec;
 
-        switch (method.toUpperCase()) {
-            case "GET":
-                responseSpec = webClient.get()
-                        .uri(newUri)
-                        .headers(httpHeaders -> extractHeaders(request, httpHeaders))
-                        .retrieve();
-                break;
-            case "POST":
-                responseSpec = webClient.post()
-                        .uri(newUri)
-                        .headers(httpHeaders -> extractHeaders(request, httpHeaders))
-                        .bodyValue(requestBody)
-                        .retrieve();
-                break;
-            case "PUT":
-                responseSpec = webClient.put()
-                        .uri(newUri)
-                        .headers(httpHeaders -> extractHeaders(request, httpHeaders))
-                        .bodyValue(requestBody)
-                        .retrieve();
-                break;
-            case "DELETE":
-                responseSpec = webClient.delete()
-                        .uri(newUri)
-                        .headers(httpHeaders -> extractHeaders(request, httpHeaders))
-                        .retrieve();
-                break;
-            default:
-                throw new Exception("Unsupported HTTP method: " + method);
-        }
+        // Extract Correlation ID from MDC
+        String correlationId = MDC.get(CORRELATION_ID_HEADER_NAME);
 
-        return responseSpec.bodyToMono(String.class).block();  // Blocking call, handle asynchronously as needed
+        try {
+            switch (method.toUpperCase()) {
+                case "GET":
+                    responseSpec = webClient.get()
+                            .uri(newUri)
+                            .headers(httpHeaders -> {
+                                extractHeaders(request, httpHeaders);
+                                httpHeaders.add(CORRELATION_ID_HEADER_NAME, correlationId);  // Add Correlation ID
+                            })
+                            .retrieve();
+                    break;
+                case "POST":
+                    responseSpec = webClient.post()
+                            .uri(newUri)
+                            .headers(httpHeaders -> {
+                                extractHeaders(request, httpHeaders);
+                                httpHeaders.add(CORRELATION_ID_HEADER_NAME, correlationId);  // Add Correlation ID
+                            })
+                            .bodyValue(requestBody)
+                            .retrieve();
+                    break;
+                case "PUT":
+                    responseSpec = webClient.put()
+                            .uri(newUri)
+                            .headers(httpHeaders -> {
+                                extractHeaders(request, httpHeaders);
+                                httpHeaders.add(CORRELATION_ID_HEADER_NAME, correlationId);  // Add Correlation ID
+                            })
+                            .bodyValue(requestBody)
+                            .retrieve();
+                    break;
+                case "DELETE":
+                    responseSpec = webClient.delete()
+                            .uri(newUri)
+                            .headers(httpHeaders -> {
+                                extractHeaders(request, httpHeaders);
+                                httpHeaders.add(CORRELATION_ID_HEADER_NAME, correlationId);  // Add Correlation ID
+                            })
+                            .retrieve();
+                    break;
+                default:
+                    throw new Exception("Unsupported HTTP method: " + method);
+            }
+
+            // Execute the request and return the response as String
+            return responseSpec.bodyToMono(String.class).block();  // Blocking call, handle asynchronously if needed
+
+        } catch (Exception e) {
+            // Log the exception with correlation ID for traceability
+            log.error("Error forwarding request to backend. Correlation ID: {}, Error: {}", correlationId, e.getMessage());
+
+            // Create a ResponseDTO with failure information
+            ResponseDTO errorResponse = ResponseDTO.builder()
+                    .statusCode(ResponseCodes.FAILURE_CODE)
+                    .status(ResponseCodes.FAILURE)
+                    .message(e.getMessage())  // Include the actual exception message in the response
+                    .build();
+
+            // Serialize ResponseDTO to JSON string and return
+            return objectMapper.writeValueAsString(errorResponse);
+        }
     }
 
+
     // Helper method to copy headers from the original request to the new WebClient request
- // Helper method to copy headers from the original request to the new WebClient request
     private void extractHeaders(HttpServletRequest request, org.springframework.http.HttpHeaders headers) {
         Enumeration<String> headerNames = request.getHeaderNames();  // Get header names as Enumeration
         while (headerNames.hasMoreElements()) {
@@ -120,5 +168,4 @@ public class ApiGatewayService {
             headers.add(headerName, request.getHeader(headerName));  // Add it to the WebClient headers
         }
     }
-
 }

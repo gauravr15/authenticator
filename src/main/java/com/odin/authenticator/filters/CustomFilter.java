@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import javax.servlet.Filter;
 import javax.servlet.FilterChain;
@@ -14,8 +15,10 @@ import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.util.ObjectUtils;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.odin.authenticator.constants.ApplicationConstants;
@@ -36,6 +39,8 @@ public class CustomFilter implements Filter {
     @Value("${bypass.apis}")
     private List<String> bypassApis;
 
+    
+
     public CustomFilter(EncryptionDecryption encryptionService, ObjectMapper objectMapper, ApiGatewayService apiGatewayService) {
         this.encryptionService = encryptionService;
         this.objectMapper = objectMapper;
@@ -50,6 +55,26 @@ public class CustomFilter implements Filter {
         HttpServletRequest httpRequest = (HttpServletRequest) request;
         HttpServletResponse httpResponse = (HttpServletResponse) response;
 
+        // Generate or extract Correlation ID
+        String correlationId = httpRequest.getHeader(ApplicationConstants.CORRELATION_ID_HEADER_NAME);
+        if (correlationId == null || correlationId.isEmpty()) {
+            correlationId = UUID.randomUUID().toString();
+        }
+
+        // Add correlation ID to MDC for logging
+        MDC.put(ApplicationConstants.CORRELATION_ID_HEADER_NAME, correlationId);
+
+        // Add correlation ID to the response header
+        httpResponse.setHeader(ApplicationConstants.CORRELATION_ID_HEADER_NAME, correlationId);
+        
+        String appLang = httpRequest.getHeader(ApplicationConstants.APP_LANG);
+        if(ObjectUtils.isEmpty(appLang)) {
+        	httpResponse.setHeader(ApplicationConstants.APP_LANG, ApplicationConstants.DEFAULT_LANGUAGE);
+        }
+        else {
+        	httpResponse.setHeader(ApplicationConstants.APP_LANG, appLang);
+        }
+
         String requestTimestamp = httpRequest.getHeader("requestTimestamp");
         String requestURI = httpRequest.getRequestURI();
         String requestBody = null;
@@ -59,10 +84,15 @@ public class CustomFilter implements Filter {
             try {
                 requestBody = httpRequest.getMethod().equalsIgnoreCase("GET") ? null : readRequestBody(httpRequest);
                 String backendResponse = apiGatewayService.processAndForwardRequest(httpRequest, requestBody);
+                httpResponse.setContentType("application/json;charset=UTF-8");
+                httpResponse.setCharacterEncoding("UTF-8");
                 httpResponse.getWriter().write(backendResponse);
             } catch (Exception e) {
                 httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
                 httpResponse.getWriter().write("Error processing request: " + e.getMessage());
+            } finally {
+                // Clear MDC after processing
+                MDC.clear();
             }
             return;
         }
@@ -113,6 +143,9 @@ public class CustomFilter implements Filter {
         } catch (Exception e) {
             httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
             httpResponse.getWriter().write("Error processing request: " + e.getMessage());
+        } finally {
+            // Clear MDC after processing
+            MDC.clear();
         }
     }
 
