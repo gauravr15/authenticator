@@ -2,6 +2,8 @@ package com.odin.authenticator.filters;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -39,8 +41,6 @@ public class CustomFilter implements Filter {
     @Value("${bypass.apis}")
     private List<String> bypassApis;
 
-    
-
     public CustomFilter(EncryptionDecryption encryptionService, ObjectMapper objectMapper, ApiGatewayService apiGatewayService) {
         this.encryptionService = encryptionService;
         this.objectMapper = objectMapper;
@@ -69,10 +69,9 @@ public class CustomFilter implements Filter {
         
         String appLang = httpRequest.getHeader(ApplicationConstants.APP_LANG);
         if(ObjectUtils.isEmpty(appLang)) {
-        	httpResponse.setHeader(ApplicationConstants.APP_LANG, ApplicationConstants.DEFAULT_LANGUAGE);
-        }
-        else {
-        	httpResponse.setHeader(ApplicationConstants.APP_LANG, appLang);
+            httpResponse.setHeader(ApplicationConstants.APP_LANG, ApplicationConstants.DEFAULT_LANGUAGE);
+        } else {
+            httpResponse.setHeader(ApplicationConstants.APP_LANG, appLang);
         }
 
         String requestTimestamp = httpRequest.getHeader("requestTimestamp");
@@ -84,9 +83,10 @@ public class CustomFilter implements Filter {
             try {
                 requestBody = httpRequest.getMethod().equalsIgnoreCase("GET") ? null : readRequestBody(httpRequest);
                 String backendResponse = apiGatewayService.processAndForwardRequest(httpRequest, requestBody);
-                httpResponse.setContentType("application/json;charset=UTF-8");
-                httpResponse.setCharacterEncoding("UTF-8");
-                httpResponse.getWriter().write(backendResponse);
+
+                // Encrypt and send the response
+                sendEncryptedResponse(httpResponse, backendResponse);
+
             } catch (Exception e) {
                 httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
                 httpResponse.getWriter().write("Error processing request: " + e.getMessage());
@@ -139,7 +139,10 @@ public class CustomFilter implements Filter {
         try {
             requestBody = wrappedRequest.getMethod().equalsIgnoreCase("GET") ? null : readRequestBody(wrappedRequest);
             String backendResponse = apiGatewayService.processAndForwardRequest(wrappedRequest, requestBody);
-            httpResponse.getWriter().write(backendResponse);
+
+            // Encrypt and send the response
+            sendEncryptedResponse(httpResponse, backendResponse);
+
         } catch (Exception e) {
             httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
             httpResponse.getWriter().write("Error processing request: " + e.getMessage());
@@ -161,5 +164,26 @@ public class CustomFilter implements Filter {
             }
         }
         return requestBody.toString();
+    }
+
+    // Encrypt the response and set the current timestamp in the response header
+    private void sendEncryptedResponse(HttpServletResponse httpResponse, String backendResponse) throws Exception {
+    	
+    	long currentEpochMillis = Instant.now().toEpochMilli();
+    	httpResponse.setHeader("responseTimestamp", String.valueOf(currentEpochMillis));  // For milliseconds
+        // Encrypt the response
+        String encryptedResponse = encryptionService.encrypt(backendResponse, String.valueOf(currentEpochMillis));
+
+        // Create the response structure
+        Map<String, String> responseMap = new HashMap<>();
+        responseMap.put("response", encryptedResponse);
+        String jsonResponse = objectMapper.writeValueAsString(responseMap);
+
+        // Set response content type and character encoding
+        httpResponse.setContentType("application/json;charset=UTF-8");
+        httpResponse.setCharacterEncoding("UTF-8");
+       
+        // Write the encrypted response
+        httpResponse.getWriter().write(jsonResponse);
     }
 }
