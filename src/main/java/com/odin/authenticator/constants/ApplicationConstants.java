@@ -9,5 +9,6 @@ public class ApplicationConstants {
 	public static final String CORRELATION_ID_HEADER_NAME = "X-Correlation-ID";
 	public static final String APP_LANG = "appLang";
 	public static final String DEFAULT_LANGUAGE = "appLang";
+	public static final String INTERNAL_SERVER_ERROR = "Internal server error";
 
 }

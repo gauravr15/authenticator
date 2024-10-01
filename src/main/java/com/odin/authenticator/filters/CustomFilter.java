@@ -55,6 +55,23 @@ public class CustomFilter implements Filter {
         HttpServletRequest httpRequest = (HttpServletRequest) request;
         HttpServletResponse httpResponse = (HttpServletResponse) response;
 
+        // CORS Handling
+        String origin = httpRequest.getHeader("Origin");
+        if (origin != null && isValidOrigin(origin)) {
+            httpResponse.setHeader("Access-Control-Allow-Origin", origin);
+            httpResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+            httpResponse.setHeader("Access-Control-Allow-Headers", "Content-Type, appLang, requestTimestamp, correlationId");
+            httpResponse.setHeader("Access-Control-Expose-Headers", "X-Correlation-ID, responseTimestamp"); 
+            httpResponse.setHeader("Access-Control-Allow-Credentials", "true");
+            httpResponse.setHeader("Access-Control-Max-Age", "3600");
+        }
+
+        // Handle preflight (OPTIONS) requests
+        if ("OPTIONS".equalsIgnoreCase(httpRequest.getMethod())) {
+            httpResponse.setStatus(HttpServletResponse.SC_OK);
+            return;
+        }
+
         // Generate or extract Correlation ID
         String correlationId = httpRequest.getHeader(ApplicationConstants.CORRELATION_ID_HEADER_NAME);
         if (correlationId == null || correlationId.isEmpty()) {
@@ -66,7 +83,6 @@ public class CustomFilter implements Filter {
 
         // Add correlation ID to the response header
         httpResponse.setHeader(ApplicationConstants.CORRELATION_ID_HEADER_NAME, correlationId);
-        
         String appLang = httpRequest.getHeader(ApplicationConstants.APP_LANG);
         if(ObjectUtils.isEmpty(appLang)) {
             httpResponse.setHeader(ApplicationConstants.APP_LANG, ApplicationConstants.DEFAULT_LANGUAGE);
@@ -85,8 +101,17 @@ public class CustomFilter implements Filter {
                 String backendResponse = apiGatewayService.processAndForwardRequest(httpRequest, requestBody);
 
                 // Encrypt and send the response
-                sendEncryptedResponse(httpResponse, backendResponse);
-
+				if (isEncryptionEnabled) {
+					sendEncryptedResponse(httpResponse, backendResponse);
+				}
+				else {
+					 httpResponse.setContentType("application/json;charset=UTF-8");
+				        httpResponse.setCharacterEncoding("UTF-8");
+				        httpResponse.setHeader("responseTimestamp", requestTimestamp);
+				       
+				        // Write the encrypted response
+				        httpResponse.getWriter().write(backendResponse);
+				}
             } catch (Exception e) {
                 httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
                 httpResponse.getWriter().write("Error processing request: " + e.getMessage());
@@ -110,7 +135,7 @@ public class CustomFilter implements Filter {
         }
 
         CustomHttpRequestWrapper wrappedRequest;
-        if (!(httpRequest instanceof CustomHttpRequestWrapper)) {
+        if (isEncryptionEnabled) {
             String body = readRequestBody(httpRequest);
             Map<String, Object> requestMap = objectMapper.readValue(body, Map.class);
             String encryptedRequest = (String) requestMap.get("request");
@@ -141,7 +166,17 @@ public class CustomFilter implements Filter {
             String backendResponse = apiGatewayService.processAndForwardRequest(wrappedRequest, requestBody);
 
             // Encrypt and send the response
-            sendEncryptedResponse(httpResponse, backendResponse);
+			if (isEncryptionEnabled) {
+				sendEncryptedResponse(httpResponse, backendResponse);
+			}
+			else {
+				 httpResponse.setContentType("application/json;charset=UTF-8");
+			        httpResponse.setCharacterEncoding("UTF-8");
+			        httpResponse.setHeader("responseTimestamp", requestTimestamp);
+			       
+			        // Write the encrypted response
+			        httpResponse.getWriter().write(backendResponse);
+			}
 
         } catch (Exception e) {
             httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
@@ -170,7 +205,7 @@ public class CustomFilter implements Filter {
     private void sendEncryptedResponse(HttpServletResponse httpResponse, String backendResponse) throws Exception {
     	
     	long currentEpochMillis = Instant.now().toEpochMilli();
-    	httpResponse.setHeader("responseTimestamp", String.valueOf(currentEpochMillis));  // For milliseconds
+    	  // For milliseconds
         // Encrypt the response
         String encryptedResponse = encryptionService.encrypt(backendResponse, String.valueOf(currentEpochMillis));
 
@@ -182,8 +217,15 @@ public class CustomFilter implements Filter {
         // Set response content type and character encoding
         httpResponse.setContentType("application/json;charset=UTF-8");
         httpResponse.setCharacterEncoding("UTF-8");
+        httpResponse.setHeader("responseTimestamp", String.valueOf(currentEpochMillis));
        
         // Write the encrypted response
         httpResponse.getWriter().write(jsonResponse);
+    }
+
+    // Validate origin. You can add custom logic to restrict specific origins if needed.
+    private boolean isValidOrigin(String origin) {
+        // Example: allow all origins for simplicity. Customize as needed.
+        return true;
     }
 }

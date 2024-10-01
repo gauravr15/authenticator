@@ -151,7 +151,7 @@ public class ApiGatewayService {
             ResponseDTO errorResponse = ResponseDTO.builder()
                     .statusCode(ResponseCodes.FAILURE_CODE)
                     .status(ResponseCodes.FAILURE)
-                    .message(e.getMessage())  // Include the actual exception message in the response
+                    .message(ApplicationConstants.INTERNAL_SERVER_ERROR)  // Include the actual exception message in the response
                     .build();
 
             // Serialize ResponseDTO to JSON string and return
