@@ -18,15 +18,19 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.util.ObjectUtils;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.odin.authenticator.constants.ApplicationConstants;
+import com.odin.authenticator.entity.ApiRequestResponseLogger;
 import com.odin.authenticator.service.ApiGatewayService;
+import com.odin.authenticator.service.RequestResponseLoggerService;
 import com.odin.authenticator.utility.CustomHttpRequestWrapper;
 import com.odin.authenticator.utility.EncryptionDecryption;
+import com.odin.authenticator.utility.JwtTokenUtil;
 
 @Component
 public class CustomFilter implements Filter {
@@ -34,17 +38,22 @@ public class CustomFilter implements Filter {
     private final EncryptionDecryption encryptionService;
     private final ObjectMapper objectMapper;
     private final ApiGatewayService apiGatewayService;  // Use the new ApiGatewayService
+    private final JwtTokenUtil jwtUtil; // Inject JwtUtil
 
     @Value("${is.encryption.enabled:true}")
     private boolean isEncryptionEnabled;
 
     @Value("${bypass.apis}")
     private List<String> bypassApis;
+    
+    @Autowired
+    private RequestResponseLoggerService reqRespService;
 
-    public CustomFilter(EncryptionDecryption encryptionService, ObjectMapper objectMapper, ApiGatewayService apiGatewayService) {
+    public CustomFilter(EncryptionDecryption encryptionService, ObjectMapper objectMapper, ApiGatewayService apiGatewayService, JwtTokenUtil jwtUtil) {
         this.encryptionService = encryptionService;
         this.objectMapper = objectMapper;
         this.apiGatewayService = apiGatewayService;
+        this.jwtUtil = jwtUtil; // Initialize JwtUtil
     }
 
     @Override
@@ -60,7 +69,7 @@ public class CustomFilter implements Filter {
         if (origin != null && isValidOrigin(origin)) {
             httpResponse.setHeader("Access-Control-Allow-Origin", origin);
             httpResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-            httpResponse.setHeader("Access-Control-Allow-Headers", "Content-Type, appLang, requestTimestamp, correlationId");
+            httpResponse.setHeader("Access-Control-Allow-Headers", "Content-Type, appLang, requestTimestamp, correlationId, Authorization"); // Added Authorization
             httpResponse.setHeader("Access-Control-Expose-Headers", "X-Correlation-ID, responseTimestamp"); 
             httpResponse.setHeader("Access-Control-Allow-Credentials", "true");
             httpResponse.setHeader("Access-Control-Max-Age", "3600");
@@ -94,24 +103,53 @@ public class CustomFilter implements Filter {
         String requestURI = httpRequest.getRequestURI();
         String requestBody = null;
 
+        // JWT validation for non-bypass APIs
+        System.out.println(requestURI.replace(ApplicationConstants.CONTEXT_PATH, "").replace(ApplicationConstants.TRAFFIC, ""));
+		if (!bypassApis.contains(
+				requestURI.replace(ApplicationConstants.CONTEXT_PATH, "").replace(ApplicationConstants.TRAFFIC, ""))) {
+			  String authHeader = httpRequest.getHeader("Authorization");
+            if (authHeader != null && authHeader.startsWith("Bearer ")) {
+                String jwtToken = authHeader.substring(7); // Extract the token
+
+                // Validate JWT
+                String username; // To hold extracted username
+                try {
+                    username = jwtUtil.getUsernameFromToken(jwtToken);
+                    if (!jwtUtil.validateToken(jwtToken, username)) {
+                        httpResponse.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                        httpResponse.getWriter().write("Invalid or expired JWT token");
+                        return;
+                    }
+                } catch (Exception e) {
+                    httpResponse.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                    httpResponse.getWriter().write("JWT validation failed: " + e.getMessage());
+                    return;
+                }
+            } else {
+                httpResponse.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                httpResponse.getWriter().write("Authorization header missing or invalid");
+                return;
+            }
+        }
+
         // If encryption is disabled or the API is bypassed, proceed with URL transformation and REST call
         if (!isEncryptionEnabled || bypassApis.contains(requestURI.replace(ApplicationConstants.CONTEXT_PATH, ""))) {
             try {
                 requestBody = httpRequest.getMethod().equalsIgnoreCase("GET") ? null : readRequestBody(httpRequest);
+                ApiRequestResponseLogger logger = reqRespService.setRequestResponseData(httpRequest, requestBody);
                 String backendResponse = apiGatewayService.processAndForwardRequest(httpRequest, requestBody);
-
+                reqRespService.updateRequestResponseData(logger, backendResponse);
                 // Encrypt and send the response
-				if (isEncryptionEnabled) {
-					sendEncryptedResponse(httpResponse, backendResponse);
-				}
-				else {
-					 httpResponse.setContentType("application/json;charset=UTF-8");
-				        httpResponse.setCharacterEncoding("UTF-8");
-				        httpResponse.setHeader("responseTimestamp", requestTimestamp);
-				       
-				        // Write the encrypted response
-				        httpResponse.getWriter().write(backendResponse);
-				}
+                if (isEncryptionEnabled) {
+                    sendEncryptedResponse(httpResponse, backendResponse);
+                } else {
+                    httpResponse.setContentType("application/json;charset=UTF-8");
+                    httpResponse.setCharacterEncoding("UTF-8");
+                    httpResponse.setHeader("responseTimestamp", requestTimestamp);
+
+                    // Write the encrypted response
+                    httpResponse.getWriter().write(backendResponse);
+                }
             } catch (Exception e) {
                 httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
                 httpResponse.getWriter().write("Error processing request: " + e.getMessage());
@@ -163,20 +201,20 @@ public class CustomFilter implements Filter {
         // After decryption, always call the service to forward the request
         try {
             requestBody = wrappedRequest.getMethod().equalsIgnoreCase("GET") ? null : readRequestBody(wrappedRequest);
+            ApiRequestResponseLogger logger = reqRespService.setRequestResponseData(httpRequest, requestBody);
             String backendResponse = apiGatewayService.processAndForwardRequest(wrappedRequest, requestBody);
-
+            reqRespService.updateRequestResponseData(logger, backendResponse);
             // Encrypt and send the response
-			if (isEncryptionEnabled) {
-				sendEncryptedResponse(httpResponse, backendResponse);
-			}
-			else {
-				 httpResponse.setContentType("application/json;charset=UTF-8");
-			        httpResponse.setCharacterEncoding("UTF-8");
-			        httpResponse.setHeader("responseTimestamp", requestTimestamp);
-			       
-			        // Write the encrypted response
-			        httpResponse.getWriter().write(backendResponse);
-			}
+            if (isEncryptionEnabled) {
+                sendEncryptedResponse(httpResponse, backendResponse);
+            } else {
+                httpResponse.setContentType("application/json;charset=UTF-8");
+                httpResponse.setCharacterEncoding("UTF-8");
+                httpResponse.setHeader("responseTimestamp", requestTimestamp);
+
+                // Write the encrypted response
+                httpResponse.getWriter().write(backendResponse);
+            }
 
         } catch (Exception e) {
             httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
@@ -203,9 +241,7 @@ public class CustomFilter implements Filter {
 
     // Encrypt the response and set the current timestamp in the response header
     private void sendEncryptedResponse(HttpServletResponse httpResponse, String backendResponse) throws Exception {
-    	
-    	long currentEpochMillis = Instant.now().toEpochMilli();
-    	  // For milliseconds
+        long currentEpochMillis = Instant.now().toEpochMilli();
         // Encrypt the response
         String encryptedResponse = encryptionService.encrypt(backendResponse, String.valueOf(currentEpochMillis));
 
@@ -218,7 +254,7 @@ public class CustomFilter implements Filter {
         httpResponse.setContentType("application/json;charset=UTF-8");
         httpResponse.setCharacterEncoding("UTF-8");
         httpResponse.setHeader("responseTimestamp", String.valueOf(currentEpochMillis));
-       
+
         // Write the encrypted response
         httpResponse.getWriter().write(jsonResponse);
     }
