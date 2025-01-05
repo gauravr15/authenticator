@@ -19,10 +19,9 @@ public class RequestResponseLoggerService {
 	@Autowired
 	private ApiRequestResponseLoggerRepository reqRespRepo;
 
-	@CreationTimestamp
-	private Timestamp currentTime;
 
 	public ApiRequestResponseLogger setRequestResponseData(HttpServletRequest httpRequest, String requestBody) {
+		Timestamp currentTime = new Timestamp(System.currentTimeMillis());
 		ApiRequestResponseLogger request = ApiRequestResponseLogger.builder()
 				.correlationId(MDC.get(ApplicationConstants.CORRELATION_ID_HEADER_NAME))
 				.deviceId(httpRequest.getHeader("deviceId")).requestBody(requestBody).requestTimestamp(currentTime)
@@ -33,8 +32,11 @@ public class RequestResponseLoggerService {
 	}
 
 	public void updateRequestResponseData(ApiRequestResponseLogger request, String backendResponse) {
+		Timestamp currentTime = new Timestamp(System.currentTimeMillis());
 		request.setResponseTimestamp(currentTime);
-		request.setResponseBody(backendResponse);
+		if (!request.getApiUrl().contains(ApplicationConstants.IMAGE_SERVICE) || backendResponse.length() < 2000) {
+			request.setResponseBody(backendResponse);
+		}
 		reqRespRepo.save(request);
 		MDC.get(ApplicationConstants.CORRELATION_ID_HEADER_NAME);
 	}

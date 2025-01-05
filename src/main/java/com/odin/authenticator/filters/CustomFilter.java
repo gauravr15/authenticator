@@ -2,6 +2,7 @@ package com.odin.authenticator.filters;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.net.URI;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
@@ -20,14 +21,19 @@ import javax.servlet.http.HttpServletResponse;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.util.ObjectUtils;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.odin.authenticator.constants.ApplicationConstants;
 import com.odin.authenticator.entity.ApiRequestResponseLogger;
 import com.odin.authenticator.service.ApiGatewayService;
 import com.odin.authenticator.service.RequestResponseLoggerService;
+import com.odin.authenticator.utility.BackendUrlSevice;
 import com.odin.authenticator.utility.CustomHttpRequestWrapper;
 import com.odin.authenticator.utility.EncryptionDecryption;
 import com.odin.authenticator.utility.JwtTokenUtil;
@@ -39,6 +45,7 @@ public class CustomFilter implements Filter {
     private final ObjectMapper objectMapper;
     private final ApiGatewayService apiGatewayService;  // Use the new ApiGatewayService
     private final JwtTokenUtil jwtUtil; // Inject JwtUtil
+    private final RestTemplate restTemplate;
 
     @Value("${is.encryption.enabled:true}")
     private boolean isEncryptionEnabled;
@@ -47,13 +54,17 @@ public class CustomFilter implements Filter {
     private List<String> bypassApis;
     
     @Autowired
+    private BackendUrlSevice backendUrlSevice;
+    
+    @Autowired
     private RequestResponseLoggerService reqRespService;
 
-    public CustomFilter(EncryptionDecryption encryptionService, ObjectMapper objectMapper, ApiGatewayService apiGatewayService, JwtTokenUtil jwtUtil) {
+    public CustomFilter(EncryptionDecryption encryptionService, ObjectMapper objectMapper, ApiGatewayService apiGatewayService, JwtTokenUtil jwtUtil, RestTemplate restTemplate) {
         this.encryptionService = encryptionService;
         this.objectMapper = objectMapper;
         this.apiGatewayService = apiGatewayService;
         this.jwtUtil = jwtUtil; // Initialize JwtUtil
+        this.restTemplate = restTemplate;
     }
 
     @Override
@@ -66,14 +77,15 @@ public class CustomFilter implements Filter {
 
         // CORS Handling
         String origin = httpRequest.getHeader("Origin");
-        if (origin != null && isValidOrigin(origin)) {
-            httpResponse.setHeader("Access-Control-Allow-Origin", origin);
-            httpResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-            httpResponse.setHeader("Access-Control-Allow-Headers", "Content-Type, appLang, requestTimestamp, correlationId, Authorization"); // Added Authorization
-            httpResponse.setHeader("Access-Control-Expose-Headers", "X-Correlation-ID, responseTimestamp"); 
-            httpResponse.setHeader("Access-Control-Allow-Credentials", "true");
-            httpResponse.setHeader("Access-Control-Max-Age", "3600");
-        }
+		if (origin != null && isValidOrigin(origin)) {
+			httpResponse.setHeader("Access-Control-Allow-Origin", origin);
+			httpResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+			httpResponse.setHeader("Access-Control-Allow-Headers",
+					"Content-Type, appLang, requestTimestamp, correlationId, Authorization, deviceId, deviceType, deviceName,userType");
+			httpResponse.setHeader("Access-Control-Expose-Headers", "X-Correlation-ID, responseTimestamp");
+			httpResponse.setHeader("Access-Control-Allow-Credentials", "true");
+			httpResponse.setHeader("Access-Control-Max-Age", "3600");
+		}
 
         // Handle preflight (OPTIONS) requests
         if ("OPTIONS".equalsIgnoreCase(httpRequest.getMethod())) {
@@ -102,6 +114,33 @@ public class CustomFilter implements Filter {
         String requestTimestamp = httpRequest.getHeader("requestTimestamp");
         String requestURI = httpRequest.getRequestURI();
         String requestBody = null;
+        
+		if (requestURI.contains(ApplicationConstants.VIDEO_CONTEXT_PATH)) {
+			String videoUri = "";
+			String originalUrl = httpRequest.getRequestURL().toString();
+			String urlPrefix = ApplicationConstants.CONTEXT_PATH + ApplicationConstants.TRAFFIC;
+
+			if (originalUrl.contains(urlPrefix)) {
+				String[] urlParts = originalUrl.split(urlPrefix);
+				if (urlParts.length > 1) {
+					String dynamicPart = urlParts[1];
+
+					String[] dynamicUrlParts = dynamicPart.split("/");
+					String prefix = dynamicUrlParts.length > 1 ? dynamicUrlParts[1] : null;
+
+					String baseUrl = backendUrlSevice.getDataByKey(prefix);
+
+					URI newUri = UriComponentsBuilder.fromHttpUrl(baseUrl)
+							.path(dynamicPart.replace("/" + prefix + "/", "/")).build().toUri();
+
+					videoUri = newUri.toString();
+
+				}
+			}
+
+			forwardVideoRequest(httpRequest, httpResponse, videoUri);
+			return; // Exit filter chain as the video service is being handled
+		}
 
         // JWT validation for non-bypass APIs
         System.out.println(requestURI.replace(ApplicationConstants.CONTEXT_PATH, "").replace(ApplicationConstants.TRAFFIC, ""));
@@ -133,8 +172,9 @@ public class CustomFilter implements Filter {
         }
 
         // If encryption is disabled or the API is bypassed, proceed with URL transformation and REST call
-        if (!isEncryptionEnabled || bypassApis.contains(requestURI.replace(ApplicationConstants.CONTEXT_PATH, ""))) {
-            try {
+		if (!isEncryptionEnabled || bypassApis.contains(requestURI.replace(ApplicationConstants.CONTEXT_PATH, ""))
+				&& !httpRequest.getMethod().equalsIgnoreCase("CORS")) {
+		    try {
                 requestBody = httpRequest.getMethod().equalsIgnoreCase("GET") ? null : readRequestBody(httpRequest);
                 ApiRequestResponseLogger logger = reqRespService.setRequestResponseData(httpRequest, requestBody);
                 String backendResponse = apiGatewayService.processAndForwardRequest(httpRequest, requestBody);
@@ -263,5 +303,19 @@ public class CustomFilter implements Filter {
     private boolean isValidOrigin(String origin) {
         // Example: allow all origins for simplicity. Customize as needed.
         return true;
+    }
+    
+    private void forwardVideoRequest(HttpServletRequest httpRequest, HttpServletResponse httpResponse, String baseVideoServiceUrl) throws IOException {
+        String videoServiceUrl = baseVideoServiceUrl;
+
+        ResponseEntity<byte[]> videoResponse = restTemplate.exchange(
+            videoServiceUrl, HttpMethod.GET, null, byte[].class);
+
+        for (Map.Entry<String, List<String>> header : videoResponse.getHeaders().entrySet()) {
+            httpResponse.setHeader(header.getKey(), String.join(",", header.getValue()));
+        }
+
+        httpResponse.setContentType("video/mp4");
+        httpResponse.getOutputStream().write(videoResponse.getBody());
     }
 }
