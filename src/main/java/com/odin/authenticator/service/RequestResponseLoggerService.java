@@ -22,19 +22,24 @@ public class RequestResponseLoggerService {
 
 	public ApiRequestResponseLogger setRequestResponseData(HttpServletRequest httpRequest, String requestBody) {
 		Timestamp currentTime = new Timestamp(System.currentTimeMillis());
+
 		ApiRequestResponseLogger request = ApiRequestResponseLogger.builder()
 				.correlationId(MDC.get(ApplicationConstants.CORRELATION_ID_HEADER_NAME))
-				.deviceId(httpRequest.getHeader("deviceId")).requestBody(requestBody).requestTimestamp(currentTime)
-				.requestMethod(httpRequest.getMethod()).apiUrl(httpRequest.getRequestURL().toString())
-				.requestBody(requestBody).build();
+				.deviceId(httpRequest.getHeader("deviceId")).requestTimestamp(currentTime)
+				.requestMethod(httpRequest.getMethod()).apiUrl(httpRequest.getRequestURL().toString()).build();
+		
+		if (!request.getApiUrl().contains(ApplicationConstants.IMAGE_SERVICE)) {
+			request.setRequestBody(requestBody);
+		}
 		reqRespRepo.save(request);
+		request.setRequestBody(requestBody);
 		return request;
 	}
 
 	public void updateRequestResponseData(ApiRequestResponseLogger request, String backendResponse) {
 		Timestamp currentTime = new Timestamp(System.currentTimeMillis());
 		request.setResponseTimestamp(currentTime);
-		if (!request.getApiUrl().contains(ApplicationConstants.IMAGE_SERVICE) || backendResponse.length() < 2000) {
+		if (!request.getApiUrl().contains(ApplicationConstants.IMAGE_SERVICE)) {
 			request.setResponseBody(backendResponse);
 		}
 		reqRespRepo.save(request);

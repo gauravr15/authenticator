@@ -1,15 +1,30 @@
 package com.odin.authenticator.service;
 
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.Enumeration;
 
+import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
-
+import javax.servlet.http.Part;
+import javax.ws.rs.core.HttpHeaders;
+import org.springframework.core.io.Resource;
+import org.apache.commons.lang.exception.ExceptionUtils;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.http.MediaType;
+import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -46,6 +61,7 @@ public class ApiGatewayService {
      * @return The response from the backend service
      */
     public String processAndForwardRequest(HttpServletRequest request, String requestBody) throws Exception {
+    	logRequestDetails(request, requestBody); 
         String originalUrl = request.getRequestURL().toString();
         String urlPrefix = ApplicationConstants.CONTEXT_PATH + ApplicationConstants.TRAFFIC;
 
@@ -91,6 +107,7 @@ public class ApiGatewayService {
      */
     private String forwardRequestToBackend(HttpServletRequest request, String requestBody, URI newUri) throws Exception {
         String method = request.getMethod();
+        System.out.println("customer id is : "+ request.getAttribute("customerId"));
         WebClient.ResponseSpec responseSpec;
 
         // Extract Correlation ID from MDC
@@ -108,14 +125,34 @@ public class ApiGatewayService {
                             .retrieve();
                     break;
                 case "POST":
-                    responseSpec = webClient.post()
-                            .uri(newUri)
-                            .headers(httpHeaders -> {
-                                extractHeaders(request, httpHeaders);
-                                httpHeaders.add(CORRELATION_ID_HEADER_NAME, correlationId);  // Add Correlation ID
-                            })
-                            .bodyValue(requestBody)
-                            .retrieve();
+                	if (isMultipartRequest(request)) {
+                		log.info("Handling multipart POST request.");
+                        MultipartBodyBuilder multipartBodyBuilder = new MultipartBodyBuilder();
+
+                        // Log multipart data before forwarding
+                        extractMultipartData(request, multipartBodyBuilder);
+                        logMultipartData(multipartBodyBuilder);
+
+                        responseSpec = webClient.post()
+                                .uri(newUri)
+                                .headers(httpHeaders -> {
+                                    extractHeaders(request, httpHeaders);  // Forward original headers
+                                    httpHeaders.add(CORRELATION_ID_HEADER_NAME, correlationId);  // Add correlation ID
+                                })
+                                .body(BodyInserters.fromMultipartData(multipartBodyBuilder.build())) // Send multipart data
+                                .header("Content-Type", MediaType.MULTIPART_FORM_DATA_VALUE) // Set the content type for multipart form
+                                .retrieve();
+                    }else {
+                        // Handle standard POST request
+                        responseSpec = webClient.post()
+                                .uri(newUri)
+                                .headers(httpHeaders -> {
+                                    extractHeaders(request, httpHeaders);
+                                    httpHeaders.add(CORRELATION_ID_HEADER_NAME, correlationId);  // Add Correlation ID
+                                })
+                                .bodyValue(requestBody)
+                                .retrieve();
+                    }
                     break;
                 case "PUT":
                     responseSpec = webClient.put()
@@ -141,11 +178,14 @@ public class ApiGatewayService {
             }
 
             // Execute the request and return the response as String
-            return responseSpec.bodyToMono(String.class).block();  // Blocking call, handle asynchronously if needed
+            
+            String resp = responseSpec.bodyToMono(String.class).block();  // Blocking call, handle asynchronously if needed -> exception while executing this line
+         //   System.out.println(responseSpec.bodyToMono(String.class).block());
+            return resp;
 
         } catch (Exception e) {
             // Log the exception with correlation ID for traceability
-            log.error("Error forwarding request to backend. Correlation ID: {}, Error: {}", correlationId, e.getMessage());
+            log.error("Error forwarding request to backend. Correlation ID: {}, Error: {}", correlationId, ExceptionUtils.getStackTrace(e));
 
             // Create a ResponseDTO with failure information
             ResponseDTO errorResponse = ResponseDTO.builder()
@@ -166,6 +206,96 @@ public class ApiGatewayService {
         while (headerNames.hasMoreElements()) {
             String headerName = headerNames.nextElement();  // Extract each header name
             headers.add(headerName, request.getHeader(headerName));  // Add it to the WebClient headers
+        }
+    }
+    
+    private boolean isMultipartRequest(HttpServletRequest request) {
+        String contentType = request.getContentType();
+        return contentType != null && contentType.toLowerCase().contains("multipart/");
+    }
+
+    private void extractMultipartData(HttpServletRequest request, MultipartBodyBuilder multipartBodyBuilder) throws IOException, ServletException {
+        Collection<Part> parts = request.getParts();
+        for (Part part : parts) {
+            String name = part.getName();
+
+            if (name == null || name.isEmpty()) {
+                log.warn("Part with empty or null name encountered. Skipping part.");
+                continue;
+            }
+
+            if (part.getContentType() != null) {
+                InputStream inputStream = part.getInputStream();
+                String contentType = part.getContentType();
+                String filename = part.getSubmittedFileName() != null ? part.getSubmittedFileName() : "uploaded-file";
+
+                // Preserve filename for downstream services
+                multipartBodyBuilder.part(name, new InputStreamResource(inputStream))
+                                    .filename(filename)
+                                    .contentType(MediaType.parseMediaType(contentType));
+            } else {
+                // Add regular form data
+                String value = new String(readAllBytes(part.getInputStream()), StandardCharsets.UTF_8);
+                multipartBodyBuilder.part(name, value);
+            }
+        }
+    }
+
+
+
+    
+    private byte[] readAllBytes(InputStream inputStream) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] data = new byte[1024]; // Read in chunks of 1KB
+        int bytesRead;
+        while ((bytesRead = inputStream.read(data, 0, data.length)) != -1) {
+            buffer.write(data, 0, bytesRead);
+        }
+        return buffer.toByteArray();
+    }
+
+    private void logRequestHeaders(HttpServletRequest request) {
+        Enumeration<String> headerNames = request.getHeaderNames();
+        while (headerNames.hasMoreElements()) {
+            String headerName = headerNames.nextElement();
+            log.info("Request Header: {} = {}", headerName, request.getHeader(headerName));
+        }
+    }
+
+    private void logMultipartData(MultipartBodyBuilder multipartBodyBuilder) {
+        multipartBodyBuilder.build().forEach((key, parts) -> {
+            parts.forEach(part -> {
+                log.info("Multipart Field: {} = {}", key, part);
+            });
+        });
+    }
+
+
+    // Log request body for standard requests
+    private void logRequestBody(String requestBody) {
+        log.info("Request Body: {}", requestBody);
+    }
+
+    // Log the response from the backend
+    private void logResponse(String response) {
+        log.info("Response from backend: {}", response);
+    }
+    
+    private void logRequestDetails(HttpServletRequest request, String requestBody) {
+        // Log headers
+        logRequestHeaders(request);
+        // Log request body for standard requests
+        if (requestBody != null && !requestBody.isEmpty()) {
+            logRequestBody(requestBody);
+        } else {
+            log.info("Request Body is empty or null.");
+        }
+
+        // Log multipart data if applicable
+        if (isMultipartRequest(request)) {
+            log.info("Request is multipart.");
+        } else {
+            log.info("Request is not multipart.");
         }
     }
 }

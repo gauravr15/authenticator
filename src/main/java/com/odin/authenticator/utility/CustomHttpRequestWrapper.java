@@ -4,15 +4,26 @@ import javax.servlet.ReadListener;
 import javax.servlet.ServletInputStream;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletRequestWrapper;
+
+import org.springframework.util.MultiValueMap;
+
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpOutputMessage;
+import org.springframework.http.MediaType;
+import org.springframework.http.converter.FormHttpMessageConverter;
+
+import java.io.*;
+
 public class CustomHttpRequestWrapper extends HttpServletRequestWrapper {
 
-    private final byte[] requestBodyBytes;
+    private byte[] requestBodyBytes;
 
    
     public CustomHttpRequestWrapper(HttpServletRequest request, String decryptedRequestBody) throws IOException {
@@ -54,5 +65,28 @@ public class CustomHttpRequestWrapper extends HttpServletRequestWrapper {
     public String getRequestBody() {
         return new String(requestBodyBytes, StandardCharsets.UTF_8);
     }
+    
+    public void setMultipartData(MultiValueMap<String, HttpEntity<?>> multipartData) {
+        // Serialize multipart data to bytes and update the request body
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        FormHttpMessageConverter converter = new FormHttpMessageConverter();
+        try {
+            converter.write(multipartData, MediaType.MULTIPART_FORM_DATA, new HttpOutputMessage() {
+                @Override
+                public OutputStream getBody() throws IOException {
+                    return outputStream;
+                }
+
+                @Override
+                public HttpHeaders getHeaders() {
+                    return new HttpHeaders();
+                }
+            });
+            this.requestBodyBytes = outputStream.toByteArray();
+        } catch (IOException e) {
+            throw new RuntimeException("Error serializing multipart data", e);
+        }
+    }
+
 
 }
