@@ -2,8 +2,6 @@ package com.odin.authenticator.service;
 
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -14,17 +12,18 @@ import java.util.Enumeration;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.Part;
-import javax.ws.rs.core.HttpHeaders;
-import org.springframework.core.io.Resource;
+
 import org.apache.commons.lang.exception.ExceptionUtils;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.InputStreamResource;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.BodyInserters;
+import org.springframework.web.client.RestTemplate;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -36,6 +35,7 @@ import com.odin.authenticator.utility.BackendUrlSevice;
 
 import lombok.extern.slf4j.Slf4j;
 
+
 @Slf4j
 @Service
 public class ApiGatewayService {
@@ -45,6 +45,9 @@ public class ApiGatewayService {
 
     private final BackendUrlSevice backendUrlService;
     private final WebClient webClient;
+    
+    @Autowired
+    private RestTemplate restTemplate;
 
     private static final String CORRELATION_ID_HEADER_NAME = "X-Correlation-ID";
 
@@ -97,6 +100,21 @@ public class ApiGatewayService {
 
         throw new Exception("URL does not contain expected prefix");
     }
+    
+    private HttpEntity<?> createMultipartEntity(HttpServletRequest request, HttpHeaders headers) throws IOException, ServletException {
+        // Use MultipartBodyBuilder to build multipart data
+        MultipartBodyBuilder multipartBodyBuilder = new MultipartBodyBuilder();
+
+        // Extract multipart data from the request and build the body
+        extractMultipartData(request, multipartBodyBuilder);  // You need this to populate the multipart data
+
+        // Log multipart data for debugging purposes
+        logMultipartData(multipartBodyBuilder);
+
+        // Create the HttpEntity with headers and multipart body
+        return new HttpEntity<>(multipartBodyBuilder.build(), headers);
+    }
+
 
     /**
      * Makes the actual WebClient call based on the incoming HTTP method (GET, POST, etc.)
@@ -127,29 +145,16 @@ public class ApiGatewayService {
                     break;
                 case "POST":
                 	if (isMultipartRequest(request)) {
-                		log.info("Handling multipart POST request.");
-                        MultipartBodyBuilder multipartBodyBuilder = new MultipartBodyBuilder();
+						HttpHeaders headers = new HttpHeaders();
+                        extractHeaders(request, headers);
+                        headers.add(CORRELATION_ID_HEADER_NAME, correlationId);
 
-                        // Log multipart data before forwarding
-                        extractMultipartData(request, multipartBodyBuilder);
-                        logMultipartData(multipartBodyBuilder);
-                        URI cleanUri = new URI(
-                        		newUri.getScheme(),
-                        		newUri.getAuthority(),
-                        		newUri.getPath(),
-                        		newUri.getQuery(),
-                        		newUri.getFragment()
-                            );
-                        responseSpec = webClient.post()
-                                .uri(cleanUri)
-                                .headers(httpHeaders -> {
-                                    extractHeaders(request, httpHeaders);  // Forward original headers
-                                    httpHeaders.add(CORRELATION_ID_HEADER_NAME, correlationId);  // Add correlation ID
-                                })
-                                .body(BodyInserters.fromMultipartData(multipartBodyBuilder.build())) // Send multipart data
-                                .header("Content-Type", MediaType.MULTIPART_FORM_DATA_VALUE) // Set the content type for multipart form
-                                .retrieve();
-                    }else {
+                        // Create the multipart entity
+                        HttpEntity<?> entity = createMultipartEntity(request, headers);
+
+                        // Perform the POST request and return the response body
+                        return restTemplate.exchange(newUri, HttpMethod.POST, entity, String.class).getBody();
+					}else {
                         // Handle standard POST request
                         responseSpec = webClient.post()
                                 .uri(newUri)
@@ -186,10 +191,7 @@ public class ApiGatewayService {
 
             // Execute the request and return the response as String
             
-            String resp = responseSpec.bodyToMono(String.class).block();  // Blocking call, handle asynchronously if needed -> exception while executing this line
-         //   System.out.println(responseSpec.bodyToMono(String.class).block());
-            
-            return resp;
+            return responseSpec.bodyToMono(String.class).block();  // Blocking call, handle asynchronously if needed -> exception while executing this line
 
         } catch (Exception e) {
             // Log the exception with correlation ID for traceability

@@ -1,16 +1,10 @@
 package com.odin.authenticator.filters;
 
 import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -30,19 +24,12 @@ import org.apache.commons.lang.exception.ExceptionUtils;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Component;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
 import org.springframework.util.ObjectUtils;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.web.multipart.MultipartHttpServletRequest;
-import org.springframework.web.multipart.support.StandardServletMultipartResolver;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -55,14 +42,6 @@ import com.odin.authenticator.utility.BackendUrlSevice;
 import com.odin.authenticator.utility.CustomHttpRequestWrapper;
 import com.odin.authenticator.utility.EncryptionDecryption;
 import com.odin.authenticator.utility.JwtTokenUtil;
-
-import org.apache.commons.fileupload.disk.DiskFileItemFactory;
-import org.apache.commons.fileupload.servlet.ServletFileUpload;
-import org.apache.commons.fileupload.disk.DiskFileItem;
-import org.apache.commons.fileupload.FileItem;
-import org.apache.commons.fileupload.FileItemIterator;
-import org.apache.commons.fileupload.FileItemStream;
-import org.apache.commons.fileupload.FileUploadException;
 
 
 
@@ -235,17 +214,7 @@ public class CustomFilter implements Filter {
                     String body = readRequestBody(httpRequest);
                     Map<String, Object> requestMap = new ConcurrentHashMap<>();
                     if (httpRequest.getContentType() != null && httpRequest.getContentType().startsWith("multipart/form-data")) {
-                        try {
-                        	
-                        	
-                            // Handle multipart request
-                        	MultipartBodyBuilder multipartBodyBuilder = new MultipartBodyBuilder();
-
-                        } catch (Exception e) {
-                            httpResponse.setStatus(HttpServletResponse.SC_BAD_REQUEST);
-                            httpResponse.getWriter().write("Error processing multipart request");
-                            return;
-                        }
+                        
 					} else {
 						requestMap = objectMapper.readValue(body, Map.class);
 					}
