@@ -1,8 +1,8 @@
 package com.odin.authenticator.utility;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.annotation.PostConstruct;
 
@@ -18,7 +18,7 @@ public class BackendUrlSevice {
     @Autowired
     private APIRedirectionRepository apiRepo;  
     
-    private static Map<String, String> dataMap = new HashMap<>();
+    private static Map<String, String> dataMap = new ConcurrentHashMap<>();
 
     @PostConstruct
     public void init() {

@@ -65,28 +65,6 @@ public class CustomHttpRequestWrapper extends HttpServletRequestWrapper {
     public String getRequestBody() {
         return new String(requestBodyBytes, StandardCharsets.UTF_8);
     }
-    
-    public void setMultipartData(MultiValueMap<String, HttpEntity<?>> multipartData) {
-        // Serialize multipart data to bytes and update the request body
-        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-        FormHttpMessageConverter converter = new FormHttpMessageConverter();
-        try {
-            converter.write(multipartData, MediaType.MULTIPART_FORM_DATA, new HttpOutputMessage() {
-                @Override
-                public OutputStream getBody() throws IOException {
-                    return outputStream;
-                }
-
-                @Override
-                public HttpHeaders getHeaders() {
-                    return new HttpHeaders();
-                }
-            });
-            this.requestBodyBytes = outputStream.toByteArray();
-        } catch (IOException e) {
-            throw new RuntimeException("Error serializing multipart data", e);
-        }
-    }
 
 
 }

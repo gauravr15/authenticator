@@ -86,6 +86,7 @@ public class ApiGatewayService {
                                 .build().toUri();
 
                         // Now make a call to the new URL using WebClient
+                        System.out.println("new url is : "+newUri); //-> output is new url is : http://192.168.29.110:8020/media/v1/file/upload
                         return forwardRequestToBackend(request, requestBody, newUri);
                     } else {
                         throw new Exception("Invalid URL prefix, no matching base URL found");
@@ -132,9 +133,15 @@ public class ApiGatewayService {
                         // Log multipart data before forwarding
                         extractMultipartData(request, multipartBodyBuilder);
                         logMultipartData(multipartBodyBuilder);
-
+                        URI cleanUri = new URI(
+                        		newUri.getScheme(),
+                        		newUri.getAuthority(),
+                        		newUri.getPath(),
+                        		newUri.getQuery(),
+                        		newUri.getFragment()
+                            );
                         responseSpec = webClient.post()
-                                .uri(newUri)
+                                .uri(cleanUri)
                                 .headers(httpHeaders -> {
                                     extractHeaders(request, httpHeaders);  // Forward original headers
                                     httpHeaders.add(CORRELATION_ID_HEADER_NAME, correlationId);  // Add correlation ID
@@ -181,6 +188,7 @@ public class ApiGatewayService {
             
             String resp = responseSpec.bodyToMono(String.class).block();  // Blocking call, handle asynchronously if needed -> exception while executing this line
          //   System.out.println(responseSpec.bodyToMono(String.class).block());
+            
             return resp;
 
         } catch (Exception e) {
@@ -205,8 +213,11 @@ public class ApiGatewayService {
         Enumeration<String> headerNames = request.getHeaderNames();  // Get header names as Enumeration
         while (headerNames.hasMoreElements()) {
             String headerName = headerNames.nextElement();  // Extract each header name
-            headers.add(headerName, request.getHeader(headerName));  // Add it to the WebClient headers
+            headers.add(headerName.trim().replaceAll(" ", ""), request.getHeader(headerName).trim().replaceAll(" ", ""));  // Add it to the WebClient headers
+            System.out.println("Forwarding Header: " + headerName + " = " + request.getHeader(headerName));
         }
+        headers.add("X-HTTP-Method-Override", request.getMethod());
+        System.out.println("method name is : "+request.getMethod());
     }
     
     private boolean isMultipartRequest(HttpServletRequest request) {
@@ -276,11 +287,6 @@ public class ApiGatewayService {
         log.info("Request Body: {}", requestBody);
     }
 
-    // Log the response from the backend
-    private void logResponse(String response) {
-        log.info("Response from backend: {}", response);
-    }
-    
     private void logRequestDetails(HttpServletRequest request, String requestBody) {
         // Log headers
         logRequestHeaders(request);

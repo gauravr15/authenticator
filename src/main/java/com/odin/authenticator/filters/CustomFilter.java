@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.servlet.Filter;
 import javax.servlet.FilterChain;
@@ -36,6 +37,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Component;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.util.ObjectUtils;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
@@ -57,6 +60,9 @@ import org.apache.commons.fileupload.disk.DiskFileItemFactory;
 import org.apache.commons.fileupload.servlet.ServletFileUpload;
 import org.apache.commons.fileupload.disk.DiskFileItem;
 import org.apache.commons.fileupload.FileItem;
+import org.apache.commons.fileupload.FileItemIterator;
+import org.apache.commons.fileupload.FileItemStream;
+import org.apache.commons.fileupload.FileUploadException;
 
 
 
@@ -82,6 +88,10 @@ public class CustomFilter implements Filter {
     
     @Autowired
     private RequestResponseLoggerService reqRespService;
+    
+    private final ThreadLocal<Collection<Part>> multipartParts = new ThreadLocal<>();
+    private final Map<HttpServletRequest, Collection<Part>> requestParts = new ConcurrentHashMap<>();
+
 
     public CustomFilter(EncryptionDecryption encryptionService, ObjectMapper objectMapper, ApiGatewayService apiGatewayService, JwtTokenUtil jwtUtil, RestTemplate restTemplate, RateLimitingService rateLimitingService) {
         this.encryptionService = encryptionService;
@@ -109,6 +119,8 @@ public class CustomFilter implements Filter {
 			if (isMultipart) {
 				// Extract multipart parts to enable resource cleanup later
 				parts = httpRequest.getParts();
+				 multipartParts.set(parts);
+	                requestParts.put(httpRequest, parts);
 			}
 		} catch (Exception e) {
 			System.out.println(e.getMessage());
@@ -221,7 +233,7 @@ public class CustomFilter implements Filter {
                 requestBody = httpRequest.getMethod().equalsIgnoreCase("GET") ? null : null;
                 if (httpRequest.getMethod().equalsIgnoreCase("POST")) {
                     String body = readRequestBody(httpRequest);
-                    Map<String, Object> requestMap = new HashMap<>();
+                    Map<String, Object> requestMap = new ConcurrentHashMap<>();
                     if (httpRequest.getContentType() != null && httpRequest.getContentType().startsWith("multipart/form-data")) {
                         try {
                         	
@@ -229,9 +241,6 @@ public class CustomFilter implements Filter {
                             // Handle multipart request
                         	MultipartBodyBuilder multipartBodyBuilder = new MultipartBodyBuilder();
 
-                            // Log multipart data before forwarding
-                            extractMultipartData((HttpServletRequest) request, multipartBodyBuilder);
-                            //handleMultipartRequest(httpRequest, httpResponse);
                         } catch (Exception e) {
                             httpResponse.setStatus(HttpServletResponse.SC_BAD_REQUEST);
                             httpResponse.getWriter().write("Error processing multipart request");
@@ -281,15 +290,17 @@ public class CustomFilter implements Filter {
                 httpResponse.getWriter().write("Error processing request: " + e.getMessage());
                 System.out.println(ExceptionUtils.getStackTrace(e));
             } finally {
-            	 if (isMultipart && parts != null) {
-                     for (Part part : parts) {
-                         try {
-                             part.delete(); // Explicitly delete temporary files
-                         } catch (Exception e) {
-                             System.err.println("Error deleting temporary file: " + e.getMessage());
-                         }
-                     }
-                 }
+            	if (isMultipart && parts != null) {
+                    for (Part part : parts) {
+                        try {
+                            part.delete(); // Explicitly delete temporary files
+                        } catch (Exception e) {
+                            System.err.println("Error deleting temporary file: " + e.getMessage());
+                        }
+                    }
+                    multipartParts.remove();
+                    requestParts.remove(httpRequest);
+                }
                 // Clear MDC after processing
                 MDC.clear();
             }
@@ -309,7 +320,7 @@ public class CustomFilter implements Filter {
         }
 
         CustomHttpRequestWrapper wrappedRequest;
-        Map<String, Object> requestMap = new HashMap<>();
+        Map<String, Object> requestMap = new ConcurrentHashMap<>();
         if (isEncryptionEnabled && !request.getContentType().startsWith("multipart/form-data")) {
             String body = readRequestBody(httpRequest);
             requestMap = objectMapper.readValue(body, Map.class);
@@ -329,22 +340,10 @@ public class CustomFilter implements Filter {
                 httpResponse.getWriter().write("Error decrypting data");
                 return;
             }
-
             wrappedRequest = new CustomHttpRequestWrapper(httpRequest, decryptedJson);
         }else if (httpRequest.getContentType() != null && httpRequest.getContentType().startsWith("multipart/form-data")) {
         	try {
-            	
-            	
-                // Handle multipart request
-            	MultipartBodyBuilder multipartBodyBuilder = new MultipartBodyBuilder();
-
-                // Log multipart data before forwarding
-                extractMultipartData((HttpServletRequest) request, multipartBodyBuilder);
-                //handleMultipartRequest(httpRequest, httpResponse);
-             // Wrap the modified request into CustomHttpRequestWrapper
               wrappedRequest = null;
-
-                  
 
             } catch (Exception e) {
                 httpResponse.setStatus(HttpServletResponse.SC_BAD_REQUEST);
@@ -387,7 +386,20 @@ public class CustomFilter implements Filter {
     }
 
     @Override
-    public void destroy() {}
+    public void destroy() {
+    	for (Collection<Part> parts : requestParts.values()) {
+            if (parts != null) {
+                for (Part part : parts) {
+                    try {
+                        part.delete(); // Clean up any remaining parts
+                    } catch (Exception e) {
+                        System.err.println("Error cleaning up part in destroy: " + e.getMessage());
+                    }
+                }
+            }
+        }
+        requestParts.clear();
+    }
 
     private String readRequestBody(HttpServletRequest request) throws IOException {
         StringBuilder requestBody = new StringBuilder();
@@ -402,6 +414,7 @@ public class CustomFilter implements Filter {
             while ((line = reader.readLine()) != null) {
                 requestBody.append(line);
             }
+            reader.close();
         }
         return requestBody.toString();
     }
@@ -413,7 +426,7 @@ public class CustomFilter implements Filter {
         String encryptedResponse = encryptionService.encrypt(backendResponse, String.valueOf(currentEpochMillis));
 
         // Create the response structure
-        Map<String, String> responseMap = new HashMap<>();
+        Map<String, String> responseMap = new ConcurrentHashMap<>();
         responseMap.put("response", encryptedResponse);
         String jsonResponse = objectMapper.writeValueAsString(responseMap);
 
@@ -453,113 +466,6 @@ public class CustomFilter implements Filter {
         httpResponse.setStatus(videoResponse.getStatusCodeValue());
         httpResponse.getOutputStream().write(videoResponse.getBody());
         httpResponse.getOutputStream().flush();
-    }
-    
-    public void handleMultipartRequest(HttpServletRequest httpRequest, HttpServletResponse httpResponse) {
-        try {
-            MultipartHttpServletRequest multipartRequest = 
-                new StandardServletMultipartResolver().resolveMultipart(httpRequest);
-            String requestTimestamp = httpRequest.getHeader("requestTimestamp");
-            // Extract the encrypted 'request' field
-            String encryptedRequest = multipartRequest.getParameter("request");
-            if (encryptedRequest == null) {
-                httpResponse.setStatus(HttpServletResponse.SC_BAD_REQUEST);
-                httpResponse.getWriter().write("Missing 'request' field in multipart data");
-                return;
-            }
-
-            // Debug logging for troubleshooting
-            System.out.println("Encrypted Request: " + encryptedRequest);
-
-            // Decrypt the 'request' field
-            String decryptedJson;
-            try {
-                // Validate Base64 encoding
-                byte[] decodedBytes;
-                try {
-                    decodedBytes = Base64.getDecoder().decode(encryptedRequest);
-                } catch (IllegalArgumentException e) {
-                    System.out.println("Invalid Base64 string: " + encryptedRequest);
-                    httpResponse.setStatus(HttpServletResponse.SC_BAD_REQUEST);
-                    httpResponse.getWriter().write("Invalid encrypted data format");
-                    return;
-                }
-
-                // Log decoded byte length for debugging
-                System.out.println("Decoded Bytes Length: " + decodedBytes.length);
-
-                // Decrypt the data
-                decryptedJson = encryptionService.decrypt(encryptedRequest, requestTimestamp);
-                System.out.println("Decrypted JSON: " + decryptedJson);
-
-            } catch (Exception e) {
-                e.printStackTrace();
-                System.out.println("Decryption failed for encryptedRequest: " + encryptedRequest);
-                httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-                httpResponse.getWriter().write("Error decrypting data");
-                return;
-            }
-
-            // Parse decrypted JSON
-            try {
-                Map<String, Object> decryptedRequestMap = objectMapper.readValue(decryptedJson, Map.class);
-                System.out.println("Parsed Decrypted JSON: " + decryptedRequestMap);
-
-                // Continue processing...
-            } catch (Exception e) {
-                e.printStackTrace();
-                System.out.println("Failed to parse decrypted JSON: " + decryptedJson);
-                httpResponse.setStatus(HttpServletResponse.SC_BAD_REQUEST);
-                httpResponse.getWriter().write("Invalid decrypted JSON format");
-            }
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            httpResponse.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-            try {
-                httpResponse.getWriter().write("Unexpected server error");
-            } catch (IOException ioException) {
-                ioException.printStackTrace();
-            }
-        }
-    }
-
-
-    private void extractMultipartData(HttpServletRequest request, MultipartBodyBuilder multipartBodyBuilder) throws IOException, ServletException {
-        Collection<Part> parts = request.getParts();
-        for (Part part : parts) {
-            String name = part.getName();
-
-            if (name == null || name.isEmpty()) {
-                //log.warn("Part with empty or null name encountered. Skipping part.");
-                continue;
-            }
-
-            if (part.getContentType() != null) {
-                InputStream inputStream = part.getInputStream();
-                String contentType = part.getContentType();
-                String filename = part.getSubmittedFileName() != null ? part.getSubmittedFileName() : "uploaded-file";
-
-                // Preserve filename for downstream services
-                multipartBodyBuilder.part(name, new InputStreamResource(inputStream))
-                                    .filename(filename)
-                                    .contentType(MediaType.parseMediaType(contentType));
-            } else {
-                // Add regular form data
-                String value = new String(readAllBytes(part.getInputStream()), StandardCharsets.UTF_8);
-                multipartBodyBuilder.part(name, value);
-            }
-        }
-    }
-
-    private byte[] readAllBytes(InputStream inputStream) throws IOException {
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        byte[] data = new byte[1024]; // Read in chunks of 1KB
-        int bytesRead;
-        while ((bytesRead = inputStream.read(data, 0, data.length)) != -1) {
-            buffer.write(data, 0, bytesRead);
-        }
-        return buffer.toByteArray();
     }
 
 }

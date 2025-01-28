@@ -39,18 +39,18 @@ public class FilterConfig {
         return new RestTemplate();
     }
     
-    @Bean
-    public WebClient webClient(WebClient.Builder webClientBuilder) {
-        // Configure the HttpClient for WebClient with custom timeouts
-        HttpClient httpClient = HttpClient.create()
-                .responseTimeout(Duration.ofSeconds(30))  // Set response timeout (for waiting for a response)
-                .option(io.netty.channel.ChannelOption.CONNECT_TIMEOUT_MILLIS, 30000);  // Set connection timeout (for establishing a connection)
-
-        return webClientBuilder
-                .clientConnector(new ReactorClientHttpConnector(httpClient)) // Use the customized HttpClient
-                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024)) // 10MB buffer
-                .build();
-    }
+//    @Bean
+//    public WebClient webClient(WebClient.Builder webClientBuilder) {
+//        // Configure the HttpClient for WebClient with custom timeouts
+//        HttpClient httpClient = HttpClient.create()
+//                .responseTimeout(Duration.ofSeconds(30))  // Set response timeout (for waiting for a response)
+//                .option(io.netty.channel.ChannelOption.CONNECT_TIMEOUT_MILLIS, 30000);  // Set connection timeout (for establishing a connection)
+//
+//        return webClientBuilder
+//                .clientConnector(new ReactorClientHttpConnector(httpClient)) // Use the customized HttpClient
+//                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024)) // 10MB buffer
+//                .build();
+//    }
     
     @Bean
     public MultipartResolver multipartResolver() {
